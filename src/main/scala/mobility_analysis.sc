@@ -2,7 +2,9 @@ import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.functions._
 
 import scala.collection.mutable.ArrayBuffer
+
 val spark: SparkSession = org.apache.spark.sql.SparkSession.builder.master("local").appName("Spark CSV Reader").getOrCreate
+
 import spark.implicits._
 
 // input files
@@ -56,7 +58,7 @@ ts_global_recovered = ts_global_recovered.drop("Province/State")
 
 // ts data transformation - columns to rows and merging
 
-def MeltDF(ip_df:DataFrame, op_col:String, melt_col:String, melt_col_string: String) : DataFrame = {
+def MeltDF(ip_df: DataFrame, op_col: String, melt_col: String, melt_col_string: String): DataFrame = {
   var year_columns = ArrayBuffer[String]()
   for (x <- ip_df.columns) {
     if (x.contains(melt_col_string)) {
@@ -65,6 +67,7 @@ def MeltDF(ip_df:DataFrame, op_col:String, melt_col:String, melt_col_string: Str
   }
   var all_columns: Array[String] = ip_df.columns.toSet.diff(year_columns.toSet).toArray
   print(all_columns)
+
   def melt(df: DataFrame, id_vars: Seq[String], value_vars: Seq[String], var_name: String = "variable", value_name: String = "value"): DataFrame = {
     // Create array<struct<variable: str, value: ...>>
     val _vars_and_vals = array((for (c <- value_vars) yield {
@@ -83,11 +86,11 @@ def MeltDF(ip_df:DataFrame, op_col:String, melt_col:String, melt_col_string: Str
   var df_new: DataFrame = melt(ip_df, all_columns, year_columns, melt_col, op_col)
   df_new = df_new.na.drop(cols = Seq(op_col))
   val groupby_columns = all_columns :+ melt_col
-  df_new = df_new.groupBy(groupby_columns.head, groupby_columns.tail:_*).agg(sum(op_col).as(op_col))
+  df_new = df_new.groupBy(groupby_columns.head, groupby_columns.tail: _*).agg(sum(op_col).as(op_col))
   df_new
 }
 
-def ChangeDateFormat(ip_df:DataFrame, date_col:String) : DataFrame = {
+def ChangeDateFormat(ip_df: DataFrame, date_col: String): DataFrame = {
   var ip_dfn = ip_df.withColumn("Daten", col(date_col))
   for (a <- 1 to 9) {
     ip_dfn = ip_dfn.withColumn("Daten", regexp_replace($"Daten", "^" + a.toString + "/", 0.toString + a.toString + "/"))
@@ -107,12 +110,23 @@ var ts_global_recovered_df = MeltDF(ts_global_recovered, "Recovered", "Date", "2
 ts_global_recovered_df = ChangeDateFormat(ts_global_recovered_df, "Date")
 var who_df_new = MeltDF(who_df, "WHOCases", "Date", "/20")
 who_df_new = ChangeDateFormat(who_df_new, "Date")
+
+// ts global merged
+var ts_global = ts_global_confirmed_df.join(ts_global_deaths_df, Seq("Country", "Lat", "Long", "Daten"), "outer").join(ts_global_recovered_df, Seq("Country", "Lat", "Long", "Daten"), "outer")
+ts_global = ts_global.sort("Country", "Daten")
+
 var who_df_merged: DataFrame = who_df_new.join(country_lookup_df.select("CC", "Country").dropDuplicates(), Seq("Country"), "left")
+ts_global = ts_global.join(country_lookup_df.select("CC", "Country").dropDuplicates(), Seq("Country"), "left")
+
+// who and ts merged
+var full_ds = ts_global.join(who_df_merged.select("CC", "Daten", "WHOCases").dropDuplicates(), Seq("CC", "Daten"), "left")
+full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
 
 // mobility transformation
 mobility_df = mobility_df.withColumn("Date", to_date(col("date")))
 mobility_df = mobility_df.withColumn("mobility", col("retail_and_recreation_percent_change_from_baseline") + col("grocery_and_pharmacy_percent_change_from_baseline") + col("parks_percent_change_from_baseline") + col("transit_stations_percent_change_from_baseline") + col("workplaces_percent_change_from_baseline") + col("residential_percent_change_from_baseline"))
 mobility_df = mobility_df.groupBy("CC", "Country", "Date").mean("mobility")
+mobility_df = mobility_df.sort("Country", "Date")
 
 // single country analysis
 val cc = "DE"
