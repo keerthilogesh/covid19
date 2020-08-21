@@ -43,8 +43,6 @@ var ts_global_recovered: DataFrame = spark.read.format("csv").option("header", "
 
 // rename column names
 
-mobility_df = mobility_df.withColumnRenamed("country_region", "Country")
-mobility_df = mobility_df.withColumnRenamed("country_region_code", "CC")
 who_df = who_df.withColumnRenamed("Country/Region", "Country")
 who_df = who_df.drop("WHO region", "Province/states")
 country_lookup_df = country_lookup_df.withColumnRenamed("country_region", "Country")
@@ -121,16 +119,3 @@ ts_global = ts_global.join(country_lookup_df.select("CC", "Country").dropDuplica
 // who and ts merged
 var full_ds = ts_global.join(who_df_merged.select("CC", "Daten", "WHOCases").dropDuplicates(), Seq("CC", "Daten"), "left")
 full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
-
-// mobility transformation
-mobility_df = mobility_df.withColumn("Date", to_date(col("date")))
-mobility_df = mobility_df.withColumn("mobility", col("retail_and_recreation_percent_change_from_baseline") + col("grocery_and_pharmacy_percent_change_from_baseline") + col("parks_percent_change_from_baseline") + col("transit_stations_percent_change_from_baseline") + col("workplaces_percent_change_from_baseline") + col("residential_percent_change_from_baseline"))
-mobility_df = mobility_df.groupBy("CC", "Country", "Date").mean("mobility")
-mobility_df = mobility_df.sort("Country", "Date")
-
-// single country analysis
-val cc = "DE"
-mobility_df = mobility_df.filter($"CC" === cc)
-who_df_merged = who_df_merged.filter($"CC" === cc)
-
-
