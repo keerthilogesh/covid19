@@ -113,8 +113,9 @@ who_df_new = ChangeDateFormat(who_df_new, "Date")
 var ts_global = ts_global_confirmed_df.join(ts_global_deaths_df, Seq("Country", "Lat", "Long", "Daten"), "outer").join(ts_global_recovered_df, Seq("Country", "Lat", "Long", "Daten"), "outer")
 ts_global = ts_global.sort("Country", "Daten")
 
+country_lookup_df = country_lookup_df.groupBy("CC", "Country").agg(sum($"Population").as("Population"), avg($"Lat").as("Lat"), avg($"Long_").as("Long"))
 var who_df_merged: DataFrame = who_df_new.join(country_lookup_df.select("CC", "Country").dropDuplicates(), Seq("Country"), "left")
-ts_global = ts_global.join(country_lookup_df.select("CC", "Country").dropDuplicates(), Seq("Country"), "left")
+ts_global = ts_global.join(country_lookup_df.select("CC", "Country", "Population").dropDuplicates(), Seq("Country"), "left")
 
 // who and ts merged
 var full_ds = ts_global.join(who_df_merged.select("CC", "Daten", "WHOCases").dropDuplicates(), Seq("CC", "Daten"), "left")
