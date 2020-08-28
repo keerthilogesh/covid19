@@ -1,12 +1,22 @@
 import DFHelper.castColumnTo
-import org.apache.spark.ml.feature.{RFormula, FeatureHasher, VectorAssembler}
+import breeze.plot.{Figure, plot}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator, RegressionEvaluator}
+import org.apache.spark.ml.feature.{FeatureHasher, RFormula, VectorAssembler}
 import org.apache.spark.ml.stat._
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{DateType, IntegerType}
-import org.apache.spark.ml.linalg.{Vector, Vectors, Matrix}
+import org.apache.spark.sql.types.{DateType, DoubleType, IntegerType}
+import org.apache.spark.ml.linalg.{Matrix, Vector, Vectors}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.ml.regression.GeneralizedLinearRegression
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.mllib.stat.KernelDensity
+import org.apache.spark.util.StatCounter
 import vegas._
+import scala.collection.JavaConverters._
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -41,7 +51,7 @@ case class Mobility(CC: String, Date: java.sql.Timestamp, Country: String, mobil
 var mobility_ds = mobility_df.as[Mobility]
 
 // Add moving window of past week and month stats
-val cc = "DE"
+val cc = "LU"
 var mobility_ds_country = mobility_ds.filter($"CC" === cc)
 var cases_ds_country = cases_ds.filter($"CC" === cc)
 var cases_mobility_ds = cases_ds_country.join(mobility_ds_country.select("CC", "Date", "mobility"), Seq("CC", "Date"), "left")
@@ -96,20 +106,75 @@ println("spearman correlation matrix:\n" + coeff22.toString(Int.MaxValue, Int.Ma
 cases_mobility_ds = cases_mobility_ds.withColumn("RecoveryRate", when($"Confirmed".equalTo(0), 0).otherwise($"Recovered"/$"Confirmed"))
 cases_mobility_ds = cases_mobility_ds.withColumn("DeathRate", when($"Confirmed".equalTo(0), 0).otherwise($"Deaths"/$"Confirmed"))
 var recovery_death_ds = cases_mobility_ds.select("Country", "Date", "RecoveryRate", "DeathRate")
-recovery_death_ds.show(1000)
+recovery_death_ds = recovery_death_ds.sort("Date")
+recovery_death_ds.show(100)
 
 import vegas._
 import vegas.render.WindowRenderer._
 import vegas.sparkExt._
 
-val plot1 = Vegas("Country Pop").
+val plot1 = Vegas("Country Recovery Rate").
   withDataFrame(recovery_death_ds).
   encodeX("Date", Temp).
   encodeY("RecoveryRate", Quant).
   mark(Line).show
 
-val plot2 = Vegas("Country Pop").
+val plot2 = Vegas("Country Death Rate").
   withDataFrame(recovery_death_ds).
   encodeX("Date", Temp).
   encodeY("DeathRate", Quant).
   mark(Line).show
+
+// predicting confirmed cases from mobility
+val label_col = "Confirmed_change"
+val feature_cols = Array("mobility", "mobility_week", "mobility_month", "mobility_change")
+def plotDistributions(sampleSets: Seq[List[Double]], xlabel: String): Figure = {
+  val f = Figure()
+  val p = f.subplot(0)
+  p.xlabel = xlabel
+  p.ylabel = "Density"
+  p.setXAxisDecimalTickUnits()
+  p.setYAxisDecimalTickUnits()
+
+  for (samples <- sampleSets) {
+    val min = samples.min
+    val max = samples.max
+    val stddev = new StatCounter(samples).stdev
+    val bandwidth = 1.06 * stddev * math.pow(samples.size, -.2)
+
+    val domain = Range.Double(min, max, (max - min) / 100).toList.toArray
+    val kd = new KernelDensity().
+      setSample(spark.sparkContext.parallelize(samples)).
+      setBandwidth(bandwidth)
+    val densities = kd.estimate(domain)
+
+    p += plot(domain, densities)
+  }
+  f
+}
+var cases_mobility_ds_ml = castColumnTo(cases_mobility_ds, label_col, DoubleType)
+cases_mobility_ds_ml = cases_mobility_ds_ml.withColumnRenamed(label_col, "label")
+val plot_v = cases_mobility_ds_ml.select(collect_list(label_col)).first().getList[Double](0).asScala.toList
+plotDistributions(Seq(plot_v), label_col)
+val Array(trainData, valData, testData) = cases_mobility_ds_ml.randomSplit(Array(0.8, 0.1, 0.1), 123456)
+val vector_assembler = new VectorAssembler().setInputCols(feature_cols).setOutputCol("features")
+val glr = new GeneralizedLinearRegression().setFamily("gaussian").setLink("identity").setMaxIter(10).setRegParam(0.3)
+val pipeline = new Pipeline().setStages(Array(vector_assembler, glr))
+val paramGrid = new ParamGridBuilder().build()
+val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(new RegressionEvaluator).setEstimatorParamMaps(paramGrid).setNumFolds(5)
+val t1 = System.nanoTime
+val cvModel = cv.fit(trainData)
+val duration = (System.nanoTime - t1) / 1e9d
+implicit class BestParamMapCrossValidatorModel(cvModel: CrossValidatorModel) {
+  def bestEstimatorParamMap: ParamMap = {
+    cvModel.getEstimatorParamMaps.zip(cvModel.avgMetrics).maxBy(_._2)._1
+  }
+}
+println("============== Time ==============")
+println(duration)
+println("============== Best Parameters ==============")
+println(cvModel.bestEstimatorParamMap)
+val predictions = cvModel.transform(testData)
+val evaluator_mae = new RegressionEvaluator().setLabelCol("label").setPredictionCol("prediction").setMetricName("mae")
+val mae = evaluator_mae.evaluate(predictions)
+println("Test MAE = ", mae)
