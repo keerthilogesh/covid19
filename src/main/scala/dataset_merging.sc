@@ -9,6 +9,8 @@ val spark: SparkSession = org.apache.spark.sql.SparkSession.builder.master("loca
 
 import spark.implicits._
 
+val timestart = System.nanoTime
+
 def MeltDF(ip_df: DataFrame, op_col: String, melt_col: String, melt_col_string: String): DataFrame = {
   /*
   The aim of this function is to melt multiple columns (date columns) to single column with value.
@@ -120,4 +122,8 @@ ts_global = ts_global.join(country_lookup_df.select("CC", "Country", "Population
 
 // Merge the who and the time series data into single dataframe and write to a csv file
 var full_ds = ts_global.join(who_df_merged.select("CC", "Daten", "WHOCases").dropDuplicates(), Seq("CC", "Daten"), "left")
-full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
+//full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
+full_ds.show()
+
+val duration = (System.nanoTime - timestart) / 1e9d
+println("Time taken for data merging:", duration)
