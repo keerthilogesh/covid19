@@ -1,6 +1,8 @@
 /*
 Aim: The aim of this file is to clean, reformat and merge the three time series (Confirmed, Deaths, Recovered), country lookup and the WHO cases dataset
  */
+//////////////////////////////////////////////////// Analysis 1 ///////////////////////////////////////////////// 
+
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions._
 import scala.collection.mutable.ArrayBuffer
@@ -66,7 +68,8 @@ def ChangeDateFormat(ip_df: DataFrame, date_col: String): DataFrame = {
 }
 
 // input files - all the input files which are used in this project
-val data_dir = "C:/Users/ac09983/Documents/Projects/covid/covid19/data/Big Data/new data/"
+// val data_dir = "C:/Users/keerthi/Documents/Projects/covid/covid19/data/Big Data/new data/"
+val data_dir = "/home/users/vthamilselvan/keerthi/project"
 val inputFile_who = data_dir + "COVID-19-master/who_covid_19_situation_reports/who_covid_19_sit_rep_time_series/who_covid_19_sit_rep_time_series.csv"
 val countrylookupFile = data_dir + "COVID-19-master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
 val TimeSeriesGlobalConfirmed = data_dir + "COVID-19-master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
@@ -98,7 +101,8 @@ country_lookup_df = country_lookup_df.filter($"Province_State".isNull)
 country_lookup_df = country_lookup_df.groupBy("CC", "Country").agg(sum($"Population").as("Population"), avg($"Lat").as("Lat"), avg($"Long_").as("Long"))
 country_lookup_df.sort($"Population".desc).show(20)
 
-// melting and changing the date format for all the input data
+// melting and changing the date format for all the input data - utilizing the already implemented functions
+// All date columns has string "20", so this is used as the keyword to extract the date columns
 var ts_global_confirmed_df = MeltDF(ts_global_confirmed, "Confirmed", "Date", "20")
 ts_global_confirmed_df = ChangeDateFormat(ts_global_confirmed_df, "Date")
 var ts_global_deaths_df = MeltDF(ts_global_deaths, "Deaths", "Date", "20")
@@ -108,7 +112,7 @@ ts_global_recovered_df = ChangeDateFormat(ts_global_recovered_df, "Date")
 var who_df_new = MeltDF(who_df, "WHOCases", "Date", "/20")
 who_df_new = ChangeDateFormat(who_df_new, "Date")
 
-// Merge Deaths, Confirmed and Recovered dataframe
+// Merge Deaths, Confirmed and Recovered dataframe with outer join to find the cases over full date range
 ts_global_confirmed_df = ts_global_confirmed_df.groupBy("Country", "Daten").agg(sum($"Confirmed").as("Confirmed")).sort($"Daten".desc)
 ts_global_deaths_df = ts_global_deaths_df.groupBy("Country", "Daten").agg(sum($"Deaths").as("Deaths")).sort($"Daten".desc)
 ts_global_recovered_df = ts_global_recovered_df.groupBy("Country", "Daten").agg(sum($"Recovered").as("Recovered")).sort($"Daten".desc)
@@ -122,8 +126,9 @@ ts_global = ts_global.join(country_lookup_df.select("CC", "Country", "Population
 
 // Merge the who and the time series data into single dataframe and write to a csv file
 var full_ds = ts_global.join(who_df_merged.select("CC", "Daten", "WHOCases").dropDuplicates(), Seq("CC", "Daten"), "left")
-//full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
+full_ds.coalesce(1).write.option("header", "true").option("sep", ",").mode("overwrite").csv(data_dir + "WHO_Local_full")
 full_ds.show()
 
 val duration = (System.nanoTime - timestart) / 1e9d
 println("Time taken for data merging:", duration)
+// time taken for this script to finish in cluster : 101 seconds
